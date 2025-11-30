@@ -7,6 +7,8 @@ import asyncio
 from flask import Flask, render_template_string
 import plotly.graph_objects as go
 from jinja2 import Template
+from datetime import datetime
+import sqlite3
 
 #####################
 # ***** ARGS ****** #
@@ -27,6 +29,7 @@ args = parser.parse_args()
 ####################
 
 testDataFile = './response_test_data.json'
+DB_FILE = 'hoymiles.db'
 
 app = Flask(__name__)
 
@@ -34,7 +37,74 @@ app = Flask(__name__)
 # ***** DEFS ***** #
 ####################
 
-def createGaugeGraphic(power, energy_total, energy_daily):
+def initDatabase():
+    """Create database and table if not exists"""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS dtu (
+            day TEXT,
+            energy_total INTEGER,
+            energy_daily INTEGER,
+            power REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def saveToDatabase(power, energy_total, energy_daily):
+    """
+    Saves data to database.
+    Overwrites the entry if one already exists for today.
+    """
+    now = datetime.now()
+    current_timestamp = now.strftime("%Y-%m-%d %H:%M:%S") 
+    today_date = now.strftime("%Y-%m-%d")
+    
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    
+    # Check if an entry already exists for today's date.
+    c.execute("SELECT rowid FROM dtu WHERE substr(day, 1, 10) = ?", (today_date,))
+    row = c.fetchone()
+    
+    if row:
+        # Update
+        c.execute('''
+            UPDATE dtu 
+            SET day = ?, energy_total = ?, energy_daily = ?, power = ?
+            WHERE rowid = ?
+        ''', (current_timestamp, energy_total, energy_daily, power, row[0]))
+    else:
+        # Insert
+        c.execute('''
+            INSERT INTO dtu (day, energy_total, energy_daily, power)
+            VALUES (?, ?, ?, ?)
+        ''', (current_timestamp, energy_total, energy_daily, power))
+        
+    conn.commit()
+    conn.close()
+
+def getLatestDataFromDatabase():
+    """Reads the most recent record from the database."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    c.execute("SELECT * FROM dtu ORDER BY day DESC LIMIT 1")
+    row = c.fetchone()
+    conn.close()
+    
+    if row:
+        return {
+            "day": row["day"],
+            "energy_total": row["energy_total"],
+            "energy_daily": row["energy_daily"],
+            "power": row["power"]
+        }
+    return None
+
+def createGaugeGraphic(power, energy_total, energy_daily): # TODO: Create SVG instead of HTML
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=power,
@@ -119,8 +189,18 @@ async def get_dtu_data():
     if response :
         pv_data = response.pv_data
         power = response.dtu_power / 10.0
-        energy_total = pv_data[0].energy_total
+        # energy_total = pv_data[0].energy_total
+        energy_total = 0
+        if hasattr(response, 'pv_data') and len(response.pv_data) > 0:
+            energy_total = response.pv_data[0].energy_total
         energy_daily = response.dtu_daily_energy
+        saveToDatabase(calc_power, energy_total, energy_daily)
+
+    db_data = getLatestDataFromDatabase()
+    if db_data:
+        power = db_data["power"]
+        energy_total = db_data["energy_total"]
+        energy_daily = db_data["energy_daily"]
 
     (template, gauge_html) = createGaugeGraphic(power, energy_total, energy_daily)
 
@@ -139,6 +219,7 @@ def index():
 ####################
 
 if __name__ == '__main__':
+    initDatabase()
     html_content = app.run()
     if html_content != 0:
         sys.exit("Exiting program due to error(s)")
