@@ -194,7 +194,7 @@ async def get_dtu_data():
         if hasattr(response, 'pv_data') and len(response.pv_data) > 0:
             energy_total = response.pv_data[0].energy_total
         energy_daily = response.dtu_daily_energy
-        saveToDatabase(calc_power, energy_total, energy_daily)
+        saveToDatabase(power, energy_total, energy_daily)
 
     db_data = getLatestDataFromDatabase()
     if db_data:
